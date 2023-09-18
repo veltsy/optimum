@@ -654,6 +654,7 @@ def llama_forward(
 
     key_value = torch.stack([key_states, value_states], 2)
     key_value = repeat_kv(key_value, self.num_key_value_groups)
+    print("Key Value Vectors: ", key_value)
 
     if past_key_value is not None:
         # reuse k, v, self_attention
