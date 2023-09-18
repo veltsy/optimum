@@ -18,6 +18,19 @@ import torch
 
 from ...utils.import_utils import check_if_transformers_greater
 
+try:
+    from flash_attn.flash_attn_interface import (
+        flash_attn_func, 
+        flash_attn_kvpacked_func, 
+        flash_attn_qkvpacked_func,
+        flash_attn_varlen_kvpacked_func, 
+    )
+    from flash_attn.bert_padding import unpad_input, pad_input
+    flash_attn_v2_installed = True
+    print('>>>> Flash Attention installed')
+except ImportError:
+    flash_attn_v2_installed = False
+    raise ImportError('Please install Flash Attention: `pip install flash-attn --no-build-isolation`')
 
 # TODO: remove once we are much higher than 4.31
 if check_if_transformers_greater("4.31"):
@@ -574,20 +587,21 @@ def _llama_prepare_decoder_attention_mask(self, attention_mask, input_shape, inp
 
     return combined_attention_mask
 
-
+# Llama attention module 
 def llama_forward(
     self,
     hidden_states: torch.Tensor,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
     past_key_value: Optional[Tuple[torch.Tensor]] = None,
+    is_padded_inputs: Optional[bool] = False,
     output_attentions: bool = False,
     use_cache: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     if output_attentions is True:
         raise ValueError("output_attentions=True can not be supported with BetterTransformer.")
 
-    bsz, q_len, _ = hidden_states.size()
+    bsz, q_len, h_size = hidden_states.size()
 
     if self.config.pretraining_tp > 1:
         key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
@@ -633,6 +647,54 @@ def llama_forward(
 
     past_key_value = (key_states, value_states) if use_cache else None
 
+    key_value = torch.stack([key_states, value_states], 2)
+    key_value = repeat_kv(key_value, self.num_key_value_groups)
+
+    has_layer_past = past_key_value is not None
+
+    # padded input support
+
+    if is_padded_inputs:
+
+        has_layer_past = past_key_value is not None
+
+        if has_layer_past:
+            past_kv = past_key_value[0]
+            past_len = past_key_value[1]
+        else:
+            past_len = 0
+
+        if has_layer_past:
+            new_len = past_len+query_states.size(1)
+            if new_len > past_kv.size(1):
+                past_kv = torch.cat([past_kv, torch.empty(bsz, 256, 2, key_value.size(3), key_value.size(4), dtype=key_value.dtype, device=key_value.device)], 1)
+            past_kv[:, past_len:new_len] = key_value
+            key_value = past_kv[:, :new_len]
+        else:
+            past_kv = key_value
+
+        assert attention_mask is not None
+
+        unpadded_kv, indices_k, cu_seqlens_k, max_seqlen_k = unpad_input(key_value, attention_mask)
+        unpadded_q, indices_q, cu_seqlens_q, max_seqlen_q = unpad_input(query_states, attention_mask[:, -query_states(1):])
+
+        attn_outputs = flash_attn_varlen_kvpacked_func(
+            unpadded_q, unpadded_kv, cu_seqlens_q, cu_seqlens_k,
+            max_seqlen_q, max_seqlen_k,
+            dropout_p=0.0, softmax_scale=1.0/torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32)).to(torch.get_default_dtype()),
+            causal=(not has_layer_past), return_attn_probs=output_attentions
+        )
+
+        attn_output = attn_outputs[0] if output_attentions else attn_outputs
+        attn_output = pad_input(
+            attn_output, indices_q, bsz, q_len
+        ).reshape(bsz, q_len, h_size)
+
+        attn_weights = attn_outputs[2] if output_attentions else None
+
+    else:
+         pass
+    
     # repeat k/v heads if n_kv_heads < n_heads
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
