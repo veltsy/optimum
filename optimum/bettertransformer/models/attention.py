@@ -611,15 +611,6 @@ def llama_forward(
     else:
         past_len = 0
 
-    if has_layer_past:
-        new_len = past_len+query_states.size(1)
-        if new_len > past_kv.size(1):
-            past_kv = torch.cat([past_kv, torch.empty(bsz, 256, 2, key_value.size(3), key_value.size(4), dtype=key_value.dtype, device=key_value.device)], 1)
-        past_kv[:, past_len:new_len] = key_value
-        key_value = past_kv[:, :new_len]
-    else:
-        past_kv = key_value
-
     if self.config.pretraining_tp > 1:
         key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
         query_slices = self.q_proj.weight.split((self.num_heads * self.head_dim) // self.config.pretraining_tp, dim=0)
@@ -665,6 +656,15 @@ def llama_forward(
         # reuse k, v, self_attention
         key_states = torch.cat([past_key_value[0], key_states], dim=2)
         value_states = torch.cat([past_key_value[1], value_states], dim=2)
+
+    if has_layer_past:
+        new_len = past_len+query_states.size(1)
+        if new_len > past_kv.size(1):
+            past_kv = torch.cat([past_kv, torch.empty(bsz, 256, 2, key_value.size(3), key_value.size(4), dtype=key_value.dtype, device=key_value.device)], 1)
+        past_kv[:, past_len:new_len] = key_value
+        key_value = past_kv[:, :new_len]
+    else:
+        past_kv = key_value
 
     past_key_value = (key_states, value_states) if use_cache else None
 
