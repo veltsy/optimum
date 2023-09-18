@@ -657,6 +657,9 @@ def llama_forward(
         key_states = torch.cat([past_key_value[0], key_states], dim=2)
         value_states = torch.cat([past_key_value[1], value_states], dim=2)
 
+    key_value = torch.stack([key_states, value_states], 2)
+    key_value = repeat_kv(key_value, self.num_key_value_groups)
+
     if has_layer_past:
         new_len = past_len+query_states.size(1)
         if new_len > past_kv.size(1):
@@ -667,9 +670,6 @@ def llama_forward(
         past_kv = key_value
 
     past_key_value = (key_states, value_states) if use_cache else None
-
-    key_value = torch.stack([key_states, value_states], 2)
-    key_value = repeat_kv(key_value, self.num_key_value_groups)
 
     has_layer_past = past_key_value is not None
 
