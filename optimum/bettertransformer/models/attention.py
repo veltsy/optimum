@@ -695,9 +695,6 @@ def llama_forward(
         ).reshape(bsz, q_len, h_size)
 
         attn_weights = attn_outputs[2] if output_attentions else None
-
-    else:
-         pass
     
     # repeat k/v heads if n_kv_heads < n_heads
     key_states = repeat_kv(key_states, self.num_key_value_groups)
