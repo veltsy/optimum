@@ -651,8 +651,8 @@ def llama_forward(
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
     if self.config.rope_scaling["type"] == "yarn":
-        query_states, key_value = self.rotary_emb(query_states, key_value, past_len)
-        
+        query_states, key_states = self.rotary_emb(query_states, key_states, past_len)
+
     else:
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
