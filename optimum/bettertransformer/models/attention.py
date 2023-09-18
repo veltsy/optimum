@@ -652,13 +652,13 @@ def llama_forward(
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
         # [bsz, nh, t, hd]
 
+    key_value = torch.stack([key_states, value_states], 2)
+    key_value = repeat_kv(key_value, self.num_key_value_groups)
+
     if past_key_value is not None:
         # reuse k, v, self_attention
         key_states = torch.cat([past_key_value[0], key_states], dim=2)
         value_states = torch.cat([past_key_value[1], value_states], dim=2)
-
-    key_value = torch.stack([key_states, value_states], 2)
-    key_value = repeat_kv(key_value, self.num_key_value_groups)
 
     if has_layer_past:
         new_len = past_len+query_states.size(1)
