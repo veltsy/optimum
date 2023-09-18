@@ -587,6 +587,19 @@ def _llama_prepare_decoder_attention_mask(self, attention_mask, input_shape, inp
 
     return combined_attention_mask
 
+# repeat_kv for yarn
+@torch.jit.script
+def repeat_kv_yarn(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+    """
+    batch, slen, _, num_key_value_heads, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, :, :, None, :].expand(batch, slen, 2, num_key_value_heads, n_rep, head_dim)
+    return hidden_states.reshape(batch, slen, 2, num_key_value_heads * n_rep, head_dim)
+
 # Llama attention module 
 def llama_forward(
     self,
@@ -653,8 +666,7 @@ def llama_forward(
         # [bsz, nh, t, hd]
 
     key_value = torch.stack([key_states, value_states], 2)
-    key_value = repeat_kv(key_value, self.num_key_value_groups)
-    print("Key Value Vectors: ", key_value)
+    key_value = repeat_kv_yarn(key_value, self.num_key_value_groups)
 
     if past_key_value is not None:
         # reuse k, v, self_attention
